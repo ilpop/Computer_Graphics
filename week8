@@ -1,0 +1,109 @@
+vec3 rayOrigin;
+vec3 rayDir;
+
+// Utility function to apply gamma correction
+vec3 gammaCorrect(vec3 color) {
+    float gamma = 2.2;
+    return pow(color, vec3(1.0 / gamma));
+}
+
+// The SDF for a sphere centered at `center` with radius `radius`
+float sphereSDF(vec3 point, vec3 center, float radius) {
+    return length(point - center) - radius;
+}
+
+// The SDF for a horizontal plane at height `h`
+float planeSDF(vec3 point, float h) {
+    return point.y - h;
+}
+
+// The SDF for a modified plane with a sine wave pattern
+float modifiedPlaneSDF(vec3 point, float h, float frequency, float amplitude) {
+    // The y-coordinate distance is offset by a sine function of the x and z coordinates
+    float sineWave = amplitude * sin(frequency * point.x) * sin(frequency * point.z);
+    return point.y - (h + sineWave);
+}
+
+// The scene SDF that combines all objects
+float sceneSDF(vec3 point, out int id) {
+    float sphereDist = sphereSDF(point, vec3(0.0, 0.0, -5.0), 1.0);
+    // Parameters for the modified plane
+    float frequency = 2.0; // Frequency of the sine wave
+    float amplitude = 0.1; // Amplitude of the sine wave
+    float planeDist = modifiedPlaneSDF(point, -1.5, frequency, amplitude); // Modified plane SDF
+
+    // Combine the distances and set the object ID
+    if (sphereDist < planeDist) {
+        id = 1; // ID for sphere
+        return sphereDist;
+    } else {
+        id = 2; // ID for modified plane
+        return planeDist;
+    }
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+    // Setup the normalized pixel coordinates (from 0 to 1)
+    vec2 uv = fragCoord / iResolution.xy;
+    uv = uv * 2.0 - 1.0; // Rescale to range from -1 to 1
+    uv.x *= iResolution.x / iResolution.y; // Correct aspect ratio
+
+    // Camera setup
+    vec3 camPos = vec3(0.0, 0.0, 0.0); // Camera position
+    vec3 camDir = vec3(0.0, 0.0, -1.0); // Camera direction
+    vec3 camUp = vec3(0.0, 1.0, 0.0); // Camera up vector
+    float fov = 3.14159 / 4.0; // Field of view (45 degrees)
+
+    // Calculate ray direction
+    vec3 rayOrigin = camPos;
+    vec3 rayDir = normalize(camDir + uv.x * tan(fov / 2.0) * normalize(cross(camDir, camUp)) +
+                    uv.y * tan(fov / 2.0) * camUp);
+
+    // Sphere setup
+    vec3 sphereCenter = vec3(0.0, 0.0, -5.0); // Sphere position
+    float sphereRadius = 1.0; // Sphere radius
+
+    // Raymarching loop
+    float t = 0.0;
+    bool hit = false;
+    int objectId = 0; // To keep track of which object was hit
+    const int MAX_ITERS = 100;
+    const float EPSILON = 0.001;
+    for (int i = 0; i < MAX_ITERS; i++) {
+        vec3 p = rayOrigin + t * rayDir;
+        float d = sceneSDF(p, objectId);
+        if (d < EPSILON) {
+            hit = true;
+            break;
+        }
+        t += d;
+    }
+
+     // Fake sky gradient - mix between blue and gray based on the y-component of the ray direction
+    vec3 skyColor = mix(vec3(0.3, 0.3, 0.3), vec3(0.1, 0.2, 0.5), (rayDir.y + 1.0) * 1.8);
+
+    // Determine the color based on the object hit
+    vec3 col;
+    if (hit) {
+        if (objectId == 1) {
+            // Sphere color - deep red
+            col = vec3(0.8, 0.4, 0.0);
+        } else if (objectId == 2) {
+            // Modified plane color
+            col = vec3(0.8, 0.8, 0.8);
+        }
+
+        // Add fog effect based on the distance 't'
+        float fogFactor = exp(-t * 0.02); // Fog density factor
+        col = mix(skyColor, col, fogFactor);
+    } else {
+        // Sky color if no hit
+        col = skyColor;
+    }
+
+    // Apply gamma correction to the final color
+    col = gammaCorrect(col);
+
+    // Output to screen
+    fragColor = vec4(col, 1.0);
+}
