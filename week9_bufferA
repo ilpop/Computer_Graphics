@@ -1,6 +1,16 @@
+
 vec3 rayOrigin;
 vec3 rayDir;
 vec4 current_Color;
+
+struct EmissiveMaterial {
+    vec3 color;
+    float intensity;
+    // Add other properties as needed
+};
+
+EmissiveMaterial emissiveObject;
+
 
 // Utility function to apply gamma correction
 vec3 gammaCorrect(vec3 color) {
@@ -25,17 +35,38 @@ float modifiedPlaneSDF(vec3 point, float h, float frequency, float amplitude) {
     return point.y - (h + sineWave);
 }
 
+// Define a function to check if a point is inside the emissive object
+bool isInsideEmissiveObject(vec3 point) {
+    // Define the shape and properties of your emissive object here
+    // Example: Sphere centered at (0.0, 2.0, -5.0) with radius 0.5 is emissive
+    float emissiveSphereSDF = sphereSDF(point, vec3(0.0, 2.0, -5.0), 0.5);
+
+    // Adjust the threshold to determine the boundary of the emissive object
+    float emissiveThreshold = 0.1;
+
+    // Check if the point is inside the emissive object
+    return emissiveSphereSDF < emissiveThreshold;
+}
+
 // Function to evaluate the SDF for the entire scene
 float sceneSDF(vec3 point) {
     float sphereDist = sphereSDF(point, vec3(0.0, 0.0, -5.0), 1.0);
+
+    // Add condition for emissive object
+    if (isInsideEmissiveObject(point)) {
+        // Set the signed distance to a negative value to indicate inside the object
+        return -0.1;
+    }
+
     // Parameters for the modified plane
-    float frequency = 2.0; // Frequency of the sine wave
-    float amplitude = 0.1; // Amplitude of the sine wave
-    float planeDist = modifiedPlaneSDF(point, -1.5, frequency, amplitude); // Modified plane SDF
+    float frequency = 2.0;
+    float amplitude = 0.1;
+    float planeDist = modifiedPlaneSDF(point, -1.5, frequency, amplitude);
 
     // Combine the distances
     return min(sphereDist, planeDist);
 }
+
 
 // Function to cast a ray and return the distance to the closest hit
 float castRay(vec3 rayOrigin, vec3 rayDir) {
@@ -91,6 +122,22 @@ float calculateShadow(vec3 hitPoint, vec3 lightDirection) {
     return shadowT < length(lightDirection) ? 0.99 : 0.39;
 }
 
+float calculateLuminance(vec3 color) {
+    // Use the luminance formula: Luminance = 0.2126 * R + 0.7152 * G + 0.0722 * B
+    return dot(color, vec3(1.2126, 1.7152, 1.0722));
+}
+
+vec3 reinhardToneMapping(vec3 color, float averageLuminance) {
+    // Reinhard tone mapping operator
+    return color / (5.0 + color / (averageLuminance * averageLuminance));
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+
+
 void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
     // Setup the normalized pixel coordinates (from 0 to 1)
     vec2 uv = fragCoord / iResolution.xy;
@@ -103,11 +150,13 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
     vec3 camUp = vec3(0.0, 1.0, 0.0); // Camera up vector
     float fov = 3.14159 / 4.0; // Field of view (45 degrees)
 
-    // Calculate ray direction
+    // Calculate ray direction with temporal anti-aliasing (TAA)
+    vec2 jitter = vec2(hash(fragCoord), hash(fragCoord + vec2(0.1)));  // Adjust the offsets as needed
+    uv += jitter / iResolution.xy;
+
     vec3 rayOrigin = camPos;
     vec3 rayDir = normalize(camDir + uv.x * tan(fov / 2.0) * normalize(cross(camDir, camUp)) +
                     uv.y * tan(fov / 2.0) * camUp);
-
     // Raymarching
     float t = castRay(rayOrigin, rayDir);
     
@@ -150,12 +199,21 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         // No hit
         col = skyColor; // Sky color
     }
-    
- 
+   // Calculate luminance
+    float totalLuminance = calculateLuminance(col);
 
-    // Apply gamma correction to the final color
-    col = gammaCorrect(col);
+    // Accumulate luminance across frames
+    float accumulatedLuminance = texelFetch(iChannel1, ivec2(fragCoord.xy - 0.5), 0).r + totalLuminance;
+    float averageLuminance = accumulatedLuminance / (1.0 + texelFetch(iChannel1, ivec2(fragCoord.xy - 1.5), 0).a);
+
+    // Tone mapping
+    col = reinhardToneMapping(col, averageLuminance);
+
+    // Gamma correction
+    col = gammaCorrect(col)/2.0;
 
     // Output to screen
-    fragColor = vec4(col, 1.0);
+      fragColor = vec4(col * 2.0, 1.0);
+
+
 }
