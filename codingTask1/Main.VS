@@ -17,7 +17,6 @@ void main() {
     vec3 color2 = vec3(0.0, 1.0, 0.0);  // Green for bottom-left vertex
     vec3 color3 = vec3(0.0, 0.0, 1.0);  // Blue for bottom-right vertex
 
-
     // Calculate the aspect ratio of the screen
     float aspectRatio = uResolution.x / uResolution.y;
 

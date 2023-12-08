@@ -1,16 +1,6 @@
-
 vec3 rayOrigin;
 vec3 rayDir;
 vec4 current_Color;
-
-struct EmissiveMaterial {
-    vec3 color;
-    float intensity;
-    // Add other properties as needed
-};
-
-EmissiveMaterial emissiveObject;
-
 
 // Utility function to apply gamma correction
 vec3 gammaCorrect(vec3 color) {
@@ -35,38 +25,17 @@ float modifiedPlaneSDF(vec3 point, float h, float frequency, float amplitude) {
     return point.y - (h + sineWave);
 }
 
-// Define a function to check if a point is inside the emissive object
-bool isInsideEmissiveObject(vec3 point) {
-    // Define the shape and properties of your emissive object here
-    // Example: Sphere centered at (0.0, 2.0, -5.0) with radius 0.5 is emissive
-    float emissiveSphereSDF = sphereSDF(point, vec3(0.0, 2.0, -5.0), 0.5);
-
-    // Adjust the threshold to determine the boundary of the emissive object
-    float emissiveThreshold = 0.1;
-
-    // Check if the point is inside the emissive object
-    return emissiveSphereSDF < emissiveThreshold;
-}
-
 // Function to evaluate the SDF for the entire scene
 float sceneSDF(vec3 point) {
     float sphereDist = sphereSDF(point, vec3(0.0, 0.0, -5.0), 1.0);
-
-    // Add condition for emissive object
-    if (isInsideEmissiveObject(point)) {
-        // Set the signed distance to a negative value to indicate inside the object
-        return -0.1;
-    }
-
     // Parameters for the modified plane
-    float frequency = 2.0;
-    float amplitude = 0.1;
-    float planeDist = modifiedPlaneSDF(point, -1.5, frequency, amplitude);
+    float frequency = 2.0; // Frequency of the sine wave
+    float amplitude = 0.1; // Amplitude of the sine wave
+    float planeDist = modifiedPlaneSDF(point, -1.5, frequency, amplitude); // Modified plane SDF
 
     // Combine the distances
     return min(sphereDist, planeDist);
 }
-
 
 // Function to cast a ray and return the distance to the closest hit
 float castRay(vec3 rayOrigin, vec3 rayDir) {
@@ -121,8 +90,6 @@ float calculateShadow(vec3 hitPoint, vec3 lightDirection) {
     // If the ray hits an object along the way, the point is in shadow
     return shadowT < length(lightDirection) ? 0.99 : 0.39;
 }
-
-
 
 void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
     // Setup the normalized pixel coordinates (from 0 to 1)
@@ -184,16 +151,11 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
         col = skyColor; // Sky color
     }
     
+ 
+
     // Apply gamma correction to the final color
     col = gammaCorrect(col);
-    
-    vec4 data = texelFetch(iChannel0, ivec2(fragCoord.xy - 0.5), 0).rgba;
-    data.rgb *= col / data.a;
 
-    //Output to screen
-    fragColor = vec4(pow(data.rgb, vec3(1.0 / 2.2)), 1.0);
+    // Output to screen
+    fragColor = vec4(col, 1.0);
 }
-
-
-
-
