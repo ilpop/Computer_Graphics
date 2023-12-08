@@ -1,0 +1,219 @@
+
+vec3 rayOrigin;
+vec3 rayDir;
+vec4 current_Color;
+
+struct EmissiveMaterial {
+    vec3 color;
+    float intensity;
+    // Add other properties as needed
+};
+
+EmissiveMaterial emissiveObject;
+
+
+// Utility function to apply gamma correction
+vec3 gammaCorrect(vec3 color) {
+    float gamma = 2.2;
+    return pow(color, vec3(1.0 / gamma));
+}
+
+// The SDF for a sphere centered at `center` with radius `radius`
+float sphereSDF(vec3 point, vec3 center, float radius) {
+    return length(point - center) - radius;
+}
+
+// The SDF for a horizontal plane at height `h`
+float planeSDF(vec3 point, float h) {
+    return point.y - h;
+}
+
+// The SDF for a modified plane with a sine wave pattern
+float modifiedPlaneSDF(vec3 point, float h, float frequency, float amplitude) {
+    // The y-coordinate distance is offset by a sine function of the x and z coordinates
+    float sineWave = amplitude * sin(frequency * point.x) * sin(frequency * point.z);
+    return point.y - (h + sineWave);
+}
+
+// Define a function to check if a point is inside the emissive object
+bool isInsideEmissiveObject(vec3 point) {
+    // Define the shape and properties of your emissive object here
+    // Example: Sphere centered at (0.0, 2.0, -5.0) with radius 0.5 is emissive
+    float emissiveSphereSDF = sphereSDF(point, vec3(0.0, 2.0, -5.0), 0.5);
+
+    // Adjust the threshold to determine the boundary of the emissive object
+    float emissiveThreshold = 0.1;
+
+    // Check if the point is inside the emissive object
+    return emissiveSphereSDF < emissiveThreshold;
+}
+
+// Function to evaluate the SDF for the entire scene
+float sceneSDF(vec3 point) {
+    float sphereDist = sphereSDF(point, vec3(0.0, 0.0, -5.0), 1.0);
+
+    // Add condition for emissive object
+    if (isInsideEmissiveObject(point)) {
+        // Set the signed distance to a negative value to indicate inside the object
+        return -0.1;
+    }
+
+    // Parameters for the modified plane
+    float frequency = 2.0;
+    float amplitude = 0.1;
+    float planeDist = modifiedPlaneSDF(point, -1.5, frequency, amplitude);
+
+    // Combine the distances
+    return min(sphereDist, planeDist);
+}
+
+
+// Function to cast a ray and return the distance to the closest hit
+float castRay(vec3 rayOrigin, vec3 rayDir) {
+    float t = 0.0;
+    const int MAX_ITERS = 100;
+    const float EPSILON = 0.001;
+    for (int i = 0; i < MAX_ITERS; i++) {
+        vec3 p = rayOrigin + t * rayDir;
+        float d = sceneSDF(p);
+        if (d < EPSILON) {
+            return t;
+        }
+        t += d;
+    }
+    return 0.0; // Return 0 if no hit within max iterations
+}
+
+
+// Function to compute the normal vector at a given point using numerical differentiation
+vec3 calculateNormal(vec3 p) {
+    vec2 e = vec2(0.001, 0.0);
+    return normalize(vec3(
+        sceneSDF(p + e.xyy) - sceneSDF(p - e.xyy),
+        sceneSDF(p + e.yxy) - sceneSDF(p - e.yxy),
+        sceneSDF(p + e.yyx) - sceneSDF(p - e.yyx)
+    ));
+}
+
+// Function to compute soft shadows
+float calculateSoftShadow(vec3 hitPoint, vec3 lightDirection) {
+    // Offset the hit point slightly in the direction of the normal to avoid self-intersections
+    vec3 shadowRayOrigin = hitPoint + 0.1 * calculateNormal(hitPoint);
+    // Cast a ray from the hit point toward the light source
+    float shadowT = castRay(shadowRayOrigin, lightDirection);
+
+    // If the ray hits an object along the way, calculate the soft shadow
+    if (shadowT < length(lightDirection)) {
+        float softness = clamp(0.2 * (1.0 - pow(smoothstep(0.0, 0.1, shadowT), 4.0)), 0.0, 1.0);
+        return mix(0.99, 0.39, softness);
+    }
+
+    return 0.99; // No obstacle, hard shadow
+}
+
+// Function to compute shadows
+float calculateShadow(vec3 hitPoint, vec3 lightDirection) {
+    // Offset the hit point slightly in the direction of the normal to avoid self-intersections
+    vec3 shadowRayOrigin = hitPoint + 0.1 * calculateNormal(hitPoint);
+    // Cast a ray from the hit point toward the light source
+    float shadowT = castRay(shadowRayOrigin, lightDirection);
+
+    // If the ray hits an object along the way, the point is in shadow
+    return shadowT < length(lightDirection) ? 0.99 : 0.39;
+}
+
+float calculateLuminance(vec3 color) {
+    // Use the luminance formula: Luminance = 0.2126 * R + 0.7152 * G + 0.0722 * B
+    return dot(color, vec3(1.2126, 1.7152, 1.0722));
+}
+
+vec3 reinhardToneMapping(vec3 color, float averageLuminance) {
+    // Reinhard tone mapping operator
+    return color / (5.0 + color / (averageLuminance * averageLuminance));
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+    // Setup the normalized pixel coordinates (from 0 to 1)
+    vec2 uv = fragCoord / iResolution.xy;
+    uv = uv * 2.0 - 1.0; // Rescale to range from -1 to 1
+    uv.x *= iResolution.x / iResolution.y; // Correct aspect ratio
+
+    // Camera setup
+    vec3 camPos = vec3(0.0, 0.0, 0.0); // Camera position
+    vec3 camDir = vec3(0.0, 0.0, -1.0); // Camera direction
+    vec3 camUp = vec3(0.0, 1.0, 0.0); // Camera up vector
+    float fov = 3.14159 / 4.0; // Field of view (45 degrees)
+
+    // Calculate ray direction with temporal anti-aliasing (TAA)
+    vec2 jitter = vec2(hash(fragCoord), hash(fragCoord + vec2(0.1)));  // Adjust the offsets as needed
+    uv += jitter / iResolution.xy;
+
+    vec3 rayOrigin = camPos;
+    vec3 rayDir = normalize(camDir + uv.x * tan(fov / 2.0) * normalize(cross(camDir, camUp)) +
+                    uv.y * tan(fov / 2.0) * camUp);
+    // Raymarching
+    float t = castRay(rayOrigin, rayDir);
+    
+    
+    // Calculate rotation angle based on mouse input
+    float rotationAngle = iMouse.x / iResolution.x;
+
+    // Create rotation matrix around the y-axis
+    mat2 rotationMatrix = mat2(cos(rotationAngle), -sin(rotationAngle), sin(rotationAngle), cos(rotationAngle));
+
+    // Rotate the ray direction
+    rayDir.xy = rotationMatrix * rayDir.xy;
+
+    // Calculate the hit point
+    vec3 hitPoint = rayOrigin + t * rayDir;
+
+    // Fake sky gradient - mix between blue and gray based on the y-component of the ray direction
+    vec3 skyColor = mix(vec3(0.01, 0.1, 0.1), vec3(0.1, 0.2, 0.5), (rayDir.y + 1.0) * 1.8);
+
+    // Determine the color based on the distance 't'
+    vec3 col;
+    if (t > 0.0) {
+        // Hit
+        vec3 normal = calculateNormal(hitPoint);
+        
+        // Lambertian shading with soft shadows
+        vec3 lightDirection = normalize(vec3(0.1, 1.0, 0.5));
+        float diffuseFactor = max(dot(normal, lightDirection), 0.0);
+        
+        // Compute soft shadows
+        float softShadow = calculateSoftShadow(hitPoint, lightDirection);
+        diffuseFactor *= softShadow;
+
+        col = mix(skyColor, vec3(0.8, 0.4, 0.0), diffuseFactor); // Sphere color - deep red
+
+        // Add fog effect based on the distance 't'
+        float fogFactor = exp(-t * 0.02); // Fog density factor
+        col = mix(skyColor, col, fogFactor);
+    } else {
+        // No hit
+        col = skyColor; // Sky color
+    }
+   // Calculate luminance
+    float totalLuminance = calculateLuminance(col);
+
+    // Accumulate luminance across frames
+    float accumulatedLuminance = texelFetch(iChannel1, ivec2(fragCoord.xy - 0.5), 0).r + totalLuminance;
+    float averageLuminance = accumulatedLuminance / (1.0 + texelFetch(iChannel1, ivec2(fragCoord.xy - 1.5), 0).a);
+
+    // Tone mapping
+    col = reinhardToneMapping(col, averageLuminance);
+
+    // Gamma correction
+    col = gammaCorrect(col)/2.0;
+
+    // Output to screen
+      fragColor = vec4(col * 2.0, 1.0);
+
+
+}
