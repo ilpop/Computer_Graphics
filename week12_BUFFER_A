@@ -1,0 +1,352 @@
+
+vec3 rayOrigin;
+vec3 rayDir;
+vec4 current_Color;
+vec3 L;
+vec3 V;
+
+const int MAX_DEPTH = 3;
+
+struct EmissiveMaterial
+{
+    vec3 color;
+    float intensity;
+    // Add other properties as needed
+};
+
+EmissiveMaterial emissiveObject;
+
+// Utility function to apply gamma correction
+vec3 gammaCorrect(vec3 color)
+{
+    float gamma = 2.2;
+    return pow(color, vec3(1.0 / gamma));
+}
+
+// The SDF for a sphere centered at `center` with radius `radius`
+float sphereSDF(vec3 point, vec3 center, float radius)
+{
+    return length(point - center) - radius;
+}
+
+// The SDF for a horizontal plane at height `h`
+float planeSDF(vec3 point, float h)
+{
+    return point.y - h;
+}
+
+// The SDF for a modified plane with a sine wave pattern
+float modifiedPlaneSDF(vec3 point, float h, float frequency, float amplitude)
+{
+    // The y-coordinate distance is offset by a sine function of the x and z coordinates
+    float sineWave = amplitude * sin(frequency * point.x) * sin(frequency * point.z);
+    return point.y - (h + sineWave);
+}
+
+// Define a function to check if a point is inside the emissive object
+bool isInsideEmissiveObject(vec3 point)
+{
+    // Define the shape and properties of your emissive object here
+    // Example: Sphere centered at (0.0, 2.0, -5.0) with radius 0.5 is emissive
+    float emissiveSphereSDF = sphereSDF(point, vec3(0.0, 2.0, -5.0), 0.5);
+
+    // Adjust the threshold to determine the boundary of the emissive object
+    float emissiveThreshold = 0.1;
+
+    // Check if the point is inside the emissive object
+    return emissiveSphereSDF < emissiveThreshold;
+}
+
+// Function to evaluate the SDF for the entire scene
+float sceneSDF(vec3 point)
+{
+    float sphereDist = sphereSDF(point, vec3(0.0, 0.0, -5.0), 1.0);
+
+    // Add condition for emissive object
+    if (isInsideEmissiveObject(point))
+    {
+        // Set the signed distance to a negative value to indicate inside the object
+        return -0.1;
+    }
+
+    // Parameters for the modified plane
+    float frequency = 2.0;
+    float amplitude = 0.1;
+    float planeDist = modifiedPlaneSDF(point, -1.5, frequency, amplitude);
+
+    // Combine the distances
+    return min(sphereDist, planeDist);
+}
+
+// Function to cast a ray and return the distance to the closest hit
+float castRay(vec3 rayOrigin, vec3 rayDir)
+{
+    float t = 0.0;
+    const int MAX_ITERS = 100;
+    const float EPSILON = 0.001;
+    for (int i = 0; i < MAX_ITERS; i++)
+    {
+        vec3 p = rayOrigin + t * rayDir;
+        float d = sceneSDF(p);
+        if (d < EPSILON)
+        {
+            return t;
+        }
+        t += d;
+    }
+    return 0.0; // Return 0 if no hit within max iterations
+}
+
+// Function to compute the normal vector at a given point using numerical differentiation
+vec3 calculateNormal(vec3 p)
+{
+    vec2 e = vec2(0.001, 0.0);
+    return normalize(vec3(
+        sceneSDF(p + e.xyy) - sceneSDF(p - e.xyy),
+        sceneSDF(p + e.yxy) - sceneSDF(p - e.yxy),
+        sceneSDF(p + e.yyx) - sceneSDF(p - e.yyx)));
+}
+
+// Function to compute soft shadows
+float calculateSoftShadow(vec3 hitPoint, vec3 lightDirection)
+{
+    // Offset the hit point slightly in the direction of the normal to avoid self-intersections
+    vec3 shadowRayOrigin = hitPoint + 0.1 * calculateNormal(hitPoint);
+    // Cast a ray from the hit point toward the light source
+    float shadowT = castRay(shadowRayOrigin, lightDirection);
+
+    // If the ray hits an object along the way, calculate the soft shadow
+    if (shadowT < length(lightDirection))
+    {
+        float softness = clamp(0.2 * (1.0 - pow(smoothstep(0.0, 0.1, shadowT), 4.0)), 0.0, 1.0);
+        return mix(0.99, 0.39, softness);
+    }
+
+    return 0.99; // No obstacle, hard shadow
+}
+
+// Function to compute shadows
+float calculateShadow(vec3 hitPoint, vec3 lightDirection)
+{
+    // Offset the hit point slightly in the direction of the normal to avoid self-intersections
+    vec3 shadowRayOrigin = hitPoint + 0.1 * calculateNormal(hitPoint);
+    // Cast a ray from the hit point toward the light source
+    float shadowT = castRay(shadowRayOrigin, lightDirection);
+
+    // If the ray hits an object along the way, the point is in shadow
+    return shadowT < length(lightDirection) ? 0.99 : 0.39;
+}
+
+float calculateLuminance(vec3 color)
+{
+    // Use the luminance formula: Luminance = 0.2126 * R + 0.7152 * G + 0.0722 * B
+    return dot(color, vec3(1.2126, 1.7152, 1.0722));
+}
+
+vec3 reinhardToneMapping(vec3 color, float averageLuminance)
+{
+    // Reinhard tone mapping operator
+    return color / (5.0 + color / (averageLuminance * averageLuminance));
+}
+
+float hash(vec2 p)
+{
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+// GGX Normal Distribution Function
+float GGXDistribution(float NdotH, float roughness)
+{
+    float roughness2 = roughness * roughness;
+    float denom = (NdotH * NdotH * (roughness2 - 1.0) + 1.0);
+    return roughness2 / (3.141592653589793 * denom * denom);
+}
+
+// Fresnel-Schlick Approximation
+vec3 FresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// Cook-Torrance BRDF
+vec3 CookTorranceBRDF(vec3 incoming, vec3 outgoing, vec3 normal, float roughness, vec3 albedo)
+{
+    float NdotL = max(0.0, dot(normal, incoming));
+    float NdotV = max(0.0, dot(normal, outgoing));
+
+    vec3 H = normalize(L + V);
+    float NdotH = max(0.0, dot(normal, H));
+
+    // Rest of your shading code using NdotH
+
+    if (NdotL > 0.0 && NdotV > 0.0)
+    {
+        // Half vector (microfacet normal)
+        vec3 H = normalize(incoming + outgoing);
+
+        // Geometric attenuation
+        float G = min(1.0, min(2.0 * NdotH * NdotV / NdotL, 2.0 * NdotH * NdotL / NdotV));
+
+        // Fresnel-Schlick approximation
+        vec3 F0 = vec3(0.04); // Default F0 value, adjust as needed
+        vec3 F = FresnelSchlick(max(0.0, dot(H, outgoing)), F0);
+
+        // GGX distribution function
+        float D = GGXDistribution(max(0.0, dot(normal, H)), roughness);
+
+        // Cook-Torrance BRDF
+        return (D * G * F) / (4.0 * NdotL * NdotV) * albedo;
+    }
+    else
+    {
+        return vec3(0.0);
+    }
+}
+
+vec3 safeNormalize(vec3 v)
+{
+    float len = length(v);
+    return len > 0.0 ? v / len : vec3(0.0);
+}
+
+vec3 randomDirection()
+{
+    // Implement the function to generate a random direction
+    return normalize(vec3(hash(vec2(1.0)), hash(vec2(2.0)), hash(vec2(3.0))));
+}
+
+vec3 microfacetBRDF(vec3 incoming, vec3 normal, float roughness)
+{
+    // Implement the microfacet BRDF function
+    // For simplicity, let's return a Lambertian reflection
+    return normalize(normal + randomDirection());
+}
+
+vec3 calculateIndirectColor(vec3 hitPoint, vec3 rayDir)
+{
+    vec3 indirectColor = vec3(0.0);
+
+    for (int i = 0; i < MAX_DEPTH; ++i)
+    {
+        // Cast a new ray in a random direction
+        vec3 randomDir = normalize(vec3(hash(vec2(1.0)), hash(vec2(2.0)), hash(vec2(3.0))));
+        vec3 newRayDir = normalize(reflect(rayDir, randomDir));
+
+        // Compute the new hit point
+        vec3 newHitPoint = hitPoint + 0.001 * newRayDir;
+
+        // Cast a new ray
+        float newT = castRay(newHitPoint, newRayDir);
+
+        // Check if the new ray hits
+        if (newT > 0.0)
+        {
+            // Hit with the new ray, accumulate the color
+            indirectColor += vec3(1.0); // You may modify this based on your requirements
+            hitPoint = newHitPoint;     // Update hitPoint for the next iteration
+            rayDir = newRayDir;         // Update rayDir for the next iteration
+        }
+        else
+        {
+            // No hit, break the loop
+            break;
+        }
+    }
+
+    return indirectColor;
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord)
+{
+
+    // Setup the normalized pixel coordinates (from 0 to 1)
+    vec2 uv = fragCoord / iResolution.xy;
+    uv = uv * 2.0 - 1.0;                   // Rescale to range from -1 to 1
+    uv.x *= iResolution.x / iResolution.y; // Correct aspect ratio
+
+    vec3 L = normalize(vec3(0.1, 1.0, 0.5)); // Example light direction
+    vec3 V = -rayDir;                        // View direction is the negative of the ray direction
+
+    // Camera setup
+    vec3 camPos = vec3(0.0, 0.0, 0.0);  // Camera position
+    vec3 camDir = vec3(0.0, 0.0, -1.0); // Camera direction
+    vec3 camUp = vec3(0.0, 1.0, 0.0);   // Camera up vector
+    float fov = 3.14159 / 4.0;          // Field of view (45 degrees)
+
+    // Calculate ray direction with temporal anti-aliasing (TAA)
+    vec2 jitter = vec2(hash(fragCoord), hash(fragCoord + vec2(0.1))); // Adjust the offsets as needed
+    uv += jitter / iResolution.xy;
+
+    vec3 rayOrigin = camPos;
+    vec3 rayDir = normalize(camDir + uv.x * tan(fov / 2.0) * normalize(cross(camDir, camUp)) +
+                            uv.y * tan(fov / 2.0) * camUp);
+
+    // Raymarching
+    float t = castRay(rayOrigin, rayDir);
+
+    // Calculate rotation angle based on mouse input
+    float rotationAngle = iMouse.x / iResolution.x;
+
+    // Create rotation matrix around the y-axis
+    mat2 rotationMatrix = mat2(cos(rotationAngle), -sin(rotationAngle), sin(rotationAngle), cos(rotationAngle));
+
+    // Rotate the ray direction
+    rayDir.xy = rotationMatrix * rayDir.xy;
+
+    // Calculate the hit point
+    vec3 hitPoint = rayOrigin + t * rayDir;
+
+    // Fake sky gradient - mix between blue and gray based on the y-component of the ray direction
+    vec3 skyColor = mix(vec3(0.01, 0.1, 0.1), vec3(0.1, 0.2, 0.5), (rayDir.y + 1.0) * 1.8);
+
+    // Determine the color based on the distance 't'
+    vec3 col;
+    float diffuseFactor = 0.0; // Declare diffuseFactor here
+
+    if (t > 0.0)
+    {
+        // Hit
+        vec3 normal = calculateNormal(hitPoint);
+
+        // Obtain the direction of the next ray using cosine hemisphere sampling
+        vec3 nextRayDir = normalize(normal + randomDirection());
+
+        // Importance sampling for microfacet BRDF (Cook-Torrance model)
+        float roughness = 0.1; // Adjust the roughness as needed
+        vec3 reflectedDir = reflect(-rayDir, normal);
+        vec3 newRayDir = normalize(microfacetBRDF(reflectedDir, normal, roughness));
+
+        // Compute the new hit point
+        vec3 newHitPoint = hitPoint + 0.001 * newRayDir;
+
+        // Cast a new ray
+        float newT = castRay(newHitPoint, newRayDir);
+
+        // Calculate the color from the new ray
+        vec3 indirectColor = calculateIndirectColor(newHitPoint, newRayDir);
+
+        // Combine direct and indirect illumination
+        col = mix(skyColor, vec3(0.8, 0.4, 0.0), diffuseFactor);
+        col += indirectColor;
+
+        // Add fog effect based on the distance 't'
+        float fogFactor = exp(-t * 0.02);
+        col = mix(skyColor, col, fogFactor);
+
+        // Calculate luminance
+        float totalLuminance = calculateLuminance(col);
+
+        // Accumulate luminance across frames
+        float accumulatedLuminance = texelFetch(iChannel1, ivec2(fragCoord.xy - 0.5), 0).r + totalLuminance;
+        float averageLuminance = accumulatedLuminance / (1.0 + texelFetch(iChannel1, ivec2(fragCoord.xy - 1.5), 0).a);
+
+        // Tone mapping
+        col = reinhardToneMapping(col, averageLuminance);
+
+        // Gamma correction
+        col = gammaCorrect(col) / 2.0;
+
+        // Output to screen
+        fragColor = vec4(col * 2.0, 1.0);
+    }
+}
